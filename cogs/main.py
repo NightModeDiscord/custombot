@@ -1,8 +1,18 @@
 import asyncio
-import re
+import io
+from typing import Tuple
 
-from discord import Embed, RawReactionActionEvent, TextChannel
-from discord.ext.commands import Bot, Cog, Context, command, is_owner
+from discord import Embed, File, Invite, RawReactionActionEvent, TextChannel
+from discord.ext.commands import (
+    Bot,
+    Cog,
+    CommandError,
+    Context,
+    InviteConverter,
+    command,
+    is_owner,
+)
+from PIL import Image, ImageDraw, ImageFont
 
 
 class Main(Cog):
@@ -23,8 +33,8 @@ class Main(Cog):
         embed = Embed(
             title="Choose",
             description=(
-                "Choose type of verification\n"
-                ":one: report server server\n"
+                "Choose Option\n"
+                ":one: report server\n"
                 ":two: for company verification"
             ),
         )
@@ -49,7 +59,29 @@ class Main(Cog):
             await self.verify(ctx)
 
     async def report(self, ctx: Context):
-        await ctx.send("Send the permanent invite to the server you're reporting")
+
+        embed = Embed(title="Report")
+        embed.set_author(name=ctx.author.name, icon_url=str(ctx.author.avatar_url))
+
+        embed.add_field(name="Invite", value=(await self.get_invite(ctx)).url)
+        files = await self.get_attachments(ctx)
+        embed.add_field(name="Attachments", value=files)
+
+        await self.channel.send(embed=embed)
+        await ctx.send("Successfully reported!")
+
+    async def verify(self, ctx: Context):
+
+        embed = Embed(title="Verification")
+        embed.add_field(name="Invite", value=(await self.get_invite(ctx)).url)
+        embed.add_field(name="Attachments", value=await self.get_attachments(ctx))
+
+        m = await self.channel.send(embed=embed)
+        await m.add_reaction(self.ACCEPT_EMOJI)
+        await ctx.send("Successfully submitted!")
+
+    async def get_invite(self, ctx) -> Invite:
+        await ctx.send("Send the permanent invite to the server")
         try:
             m = await self.bot.wait_for(
                 "message",
@@ -57,43 +89,10 @@ class Main(Cog):
                 timeout=60,
             )
         except asyncio.TimeoutError:
-            return ctx.send("Timeout!")
+            raise CommandError("Timeout!")
+        return await InviteConverter().convert(ctx, m.content)
 
-        invite = m.content
-        result = re.search(
-            r"https://discord.gg/[a-z0-9]{10}", invite, flags=re.IGNORECASE
-        )
-        print(result)
-        if not result:
-            return await ctx.send("No invite found!")
-        invite = result.string
-
-        embed = Embed(title="Report")
-        embed.set_author(name=ctx.author.name, icon_url=str(ctx.author.avatar_url))
-
-        embed.add_field(name="Invite", value=invite)
-        files = await self.get_attachments(ctx)
-        if not files:
-            return
-        embed.add_field(name="Attachments", value=files)
-
-        # TODO Send in a channel, save to db
-        m = await self.channel.send(embed=embed)
-        await ctx.send("Successfully reported!")
-
-    async def verify(self, ctx: Context):
-        files = await self.get_attachments(ctx)
-        if not files:
-            return
-
-        embed = Embed(title="Verification")
-        embed.add_field(name="Attachments", value=files)
-
-        m = await self.channel.send(embed=embed)
-        await m.add_reaction(self.ACCEPT_EMOJI)
-        await ctx.send("Successfully requested!")
-
-    async def get_attachments(self, ctx: Context):
+    async def get_attachments(self, ctx: Context) -> str:
         await ctx.send("Send proofs as **attachments**")
         try:
             m = await self.bot.wait_for(
@@ -102,11 +101,9 @@ class Main(Cog):
                 timeout=60,
             )
         except asyncio.TimeoutError:
-            await ctx.send("Timeout!")
-            return
+            raise CommandError("Timeout!")
         if not m.attachments:
-            await ctx.send("No attachments found!")
-            return
+            raise CommandError("No files found!")
         return "\n".join([f"[{a.filename}]({a.url})" for a in m.attachments])
 
     @Cog.listener("on_raw_reaction_add")
@@ -118,8 +115,42 @@ class Main(Cog):
 
         msg = await self.channel.fetch_message(payload.message_id)
 
-        # TODO: Create an image and send
-        # $wip
+        if msg.author != self.bot.user:
+            return
+        if payload.member and payload.member.bot:
+            return
+
+        embed = msg.embeds[0]
+        if embed.title != "Verification":
+            return
+        invite: Invite = await InviteConverter().convert(await self.bot.get_context(msg), embed.fields[0].value)  # type: ignore
+
+        f = self.draw(
+            (str(invite.inviter), (480, 200)),
+            ("Scam proof", (223, 324)),
+            (str(invite.guild.id), (223, 379)),
+        )
+
+        try:
+            await invite.inviter.send(file=File(f, filename="certificate.jpg"))
+        except:
+            await self.channel.send(
+                "Unable to DM applier, sending here.",
+                file=File(f, filename="certificate.jpg"),
+            )
+
+    @staticmethod
+    def draw(*draws: Tuple[str, Tuple[int, int]]):
+        font = ImageFont.truetype("OpenSans-Light.ttf", size=40)
+        img = Image.open("certificate.jpg")
+        imgdraw = ImageDraw.Draw(img)
+        for text, coord in draws:
+            imgdraw.text(coord, text, fill=(0, 0, 0), font=font)
+
+        b = io.BytesIO()
+        img.save(b, format="JPEG")
+        b.seek(0)
+        return b
 
     @command()
     @is_owner()
@@ -129,4 +160,5 @@ class Main(Cog):
 
 
 def setup(bot):
-    bot.add_cog(Main(bot, channel_id=770952819570245632))
+    # bot.add_cog(Main(bot, channel_id=828282130538823750))
+    bot.add_cog(Main(bot, channel_id=789838528271745045))
